@@ -2,3 +2,6 @@
 /kernel/kernel.elf
 /kernel/.*.d
 /kernel/hankaku.bin
+/kernel/usb/*.o
+/kernel/usb/xhci/*.o
+/kernel/usb/classdriver/`.o
