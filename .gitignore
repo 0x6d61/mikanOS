@@ -1,3 +1,4 @@
 /kernel/*.o
 /kernel/kernel.elf
-/kernel/*.d
+/kernel/.*.d
+/kernel/hankaku.bin
