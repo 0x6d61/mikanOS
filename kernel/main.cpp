@@ -6,14 +6,16 @@
 #include "graphics.hpp"
 #include "font.hpp"
 #include "console.hpp"
+#include "pci.hpp"
+#include "usb/memory.hpp"
+#include "usb/device.hpp"
+#include "usb/classdriver/mouse.hpp"
+#include "usb/xhci/xhci.hpp"
+#include "usb/xhci/trb.hpp"
 
-void *operator new(size_t size, void *buf)
-{
-    return buf;
-}
 
-void operator delete(void *obj) noexcept
-{
+void operator delete(void* obj) noexcept {
+
 }
 
 const PixelColor kDesktopBGColor{45, 118, 237};
@@ -98,6 +100,30 @@ extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
             if (mouse_cursor_shape[dy][dx] == '@')
             {
                 pixel_writer->Write(200 + dx, 100 + dy, {0, 0, 0});
+            }
+        }
+    }
+
+    auto err = pci::ScanAllBus();
+    printk("ScanAllBus: %s\n",err.Name());
+
+    for (int i = 0;i<pci::num_device; ++i) {
+        const auto& dev =pci::devices[i];
+        auto vendor_id = pci::ReadVendorId(dev.bus,dev.device,dev.function);
+        auto class_code = pci::ReadClassCode(dev.bus,dev.device,dev.function);
+        printk("%d.%d.%d: vend %04x , class %08x, head %02x\n",
+            dev.bus,dev.device,dev.function,
+            vendor_id,class_code,dev.header_type
+        );
+    }
+
+    pci::Device* xhc_dev = nullptr;
+    for(int i = 0;i< pci::num_device; ++i) {
+        if(pci::devices[i].class_code.Match(0x0cu,0x03u,0x30u)) {
+            xhc_dev = &pci::devices[i];
+
+            if(0x8060 == pci::ReadVendorId(*xhc_dev)) {
+                break;
             }
         }
     }
