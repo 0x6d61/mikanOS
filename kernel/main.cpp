@@ -19,6 +19,7 @@
 #include "usb/xhci/trb.hpp"
 #include "interrupt.hpp"
 #include "asmfunc.h"
+#include "queue.hpp"
 
 void operator delete(void *obj) noexcept
 {
@@ -78,20 +79,24 @@ void SwitchEhci2Xhci(const pci::Device &xhc_dev)
     Log(kDebug, "SwitchEhci2Xhci: SS = %02, xHCI = %02x\n", superspeed_ports, ehci2xhci_ports);
 }
 
+usb::xhci::Controller *xhc;
 
-usb::xhci::Controller* xhc;
-__attribute__((interrupt))
-void IntHandlerXHCI(InterruptFrame* frame) {
-    while (xhc->PrimaryEventRing()->HasFront()) {
-        if(auto err = ProcessEvent(*xhc)) {
-            Log(kError,"Error while ProcessEvent: %s at %s:%d\n",
-            err.Name(),err.File(),err.Line());
-        }
-    }
+struct Message
+{
+    enum Type
+    {
+        kInterrupXHCI,
+    } type;
+};
 
+ArrayQueue<Message> *main_queue;
+
+__attribute__((interrupt)) void IntHandlerXHCI(InterruptFrame *frame)
+{
+    main_queue->Push(Message{Message::kInterrupXHCI});
     NotifyEndOfInterrupt();
-
 }
+
 extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
 {
     switch (frame_buffer_config.pixel_format)
@@ -118,9 +123,12 @@ extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
     printk("Welcome to MikanOS!\n");
     SetLogLevel(kWarn);
 
-    mouse_cursor = new(mouse_cursor_buf) MouseCursor{
-        pixel_writer,kDesktopBGColor,{300,200}
-    };
+    mouse_cursor = new (mouse_cursor_buf) MouseCursor{
+        pixel_writer, kDesktopBGColor, {300, 200}};
+
+    std::array<Message, 32> main_queue_data;
+    ArrayQueue<Message> main_queue{main_queue_data};
+    ::main_queue = &main_queue;
 
     auto err = pci::ScanAllBus();
     Log(kDebug, "ScanAllBus: %s\n", err.Name());
@@ -145,19 +153,17 @@ extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
             xhc_dev->bus, xhc_dev->device, xhc_dev->function);
     }
 
-
     const uint16_t cs = GetCS();
-    SetIDTEntry(idt[InterruptVector::kXHCI],MakeIDTAttr(DescriptorType::kInterruptGate,0),
-    reinterpret_cast<uint64_t>(IntHandlerXHCI),cs);
-    LoadIDT(sizeof(idt)- 1,reinterpret_cast<uintptr_t>(&idt[0]));
+    SetIDTEntry(idt[InterruptVector::kXHCI], MakeIDTAttr(DescriptorType::kInterruptGate, 0),
+                reinterpret_cast<uint64_t>(IntHandlerXHCI), cs);
+    LoadIDT(sizeof(idt) - 1, reinterpret_cast<uintptr_t>(&idt[0]));
 
-    const uint8_t bsp_local_apic_id = *reinterpret_cast<const uint32_t*>(0xfee00020) >> 24;
+    const uint8_t bsp_local_apic_id = *reinterpret_cast<const uint32_t *>(0xfee00020) >> 24;
 
     pci::ConfigureMSIFixedDestination(
-        *xhc_dev,bsp_local_apic_id,
-        pci::MSITriggerMode::kLevel,pci::MSIDeliveryMode::kFixed,
-        InterruptVector::kXHCI,0
-    );
+        *xhc_dev, bsp_local_apic_id,
+        pci::MSITriggerMode::kLevel, pci::MSIDeliveryMode::kFixed,
+        InterruptVector::kXHCI, 0);
 
     const WithError<uint64_t> xhc_bar = pci::ReadBar(*xhc_dev, 0);
     Log(kDebug, "ReadBar: %s\n", xhc_bar.error.Name());
@@ -176,12 +182,12 @@ extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
         Log(kDebug, "xhc.Initlalize: %s\n", err.Name());
     }
 
-    Log(kInfo,"xHC starting\n");
+    Log(kInfo, "xHC starting\n");
     xhc.Run();
 
     ::xhc = &xhc;
     __asm__("sti");
-    
+
     usb::HIDMouseDriver::default_observer = MouseObserver;
 
     for (int i = 1; i <= xhc.MaxPorts(); ++i)
@@ -199,8 +205,34 @@ extern "C" void KernelMain(const FrameBufferConfig &frame_buffer_config)
         }
     }
 
-    while (1)
-        __asm__("hlt");
+    while (true)
+    {
+        __asm__("cli");
+        if (main_queue.Count() == 0)
+        {
+            __asm__("sti\n\thlt");
+            continue;
+        }
+
+        Message msg = main_queue.Front();
+        main_queue.Pop();
+        __asm__("sti");
+
+        switch (msg.type)
+        {
+        case Message::kInterrupXHCI:
+            while (xhc.PrimaryEventRing()->HasFront())
+            {
+                if (auto err = ProcessEvent(xhc))
+                {
+                    Log(kError, "Error while ProcessEvent: %s at %s:%d\n", err.Name(), err.File(), err.Line());
+                }
+            }
+            break;
+        default:
+            Log(kError, "Unknown message type: %d\n", msg.type);
+        }
+    }
 }
 
 extern "C" void __cxa_pure_virtual()
