@@ -4,4 +4,4 @@
 /kernel/hankaku.bin
 /kernel/usb/*.o
 /kernel/usb/xhci/*.o
-/kernel/usb/classdriver/`.o
+/kernel/usb/classdriver/*.o
